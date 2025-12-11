@@ -33,8 +33,11 @@
           {
             home-manager.useGlobalPkgs = true;
             home-manager.useUserPackages = true;
-            home-manager.extraSpecialArgs = { inherit nix-setup; };
-            # Import home configuration and pass nix-setup path
+            home-manager.extraSpecialArgs = { 
+              inherit nix-setup; 
+              username = "nixos";
+            };
+            # Import home configuration
             home-manager.users.nixos = import "${nix-setup}/home";
           }
         ];
