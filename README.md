@@ -163,40 +163,60 @@ NixOS users have two options:
 
 Integrate this configuration into your NixOS system configuration by importing the home-manager module:
 
-1. Add home-manager to your system flake inputs:
+1. First, clone this repository to your home directory:
+   ```bash
+   git clone https://github.com/devinbfergy/nix-setup.git ~/.config/nix-setup
+   ```
+
+2. Create or update your `/etc/nixos/flake.nix`:
    ```nix
    # /etc/nixos/flake.nix
    {
+     description = "NixOS configuration";
+
      inputs = {
        nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
        home-manager = {
          url = "github:nix-community/home-manager";
          inputs.nixpkgs.follows = "nixpkgs";
        };
-       nix-setup = {
-         url = "github:devinbfergy/nix-setup";  # or use path:./path/to/nix-setup for local
-         inputs.nixpkgs.follows = "nixpkgs";
+     };
+
+     outputs = { self, nixpkgs, home-manager, ... }@inputs: {
+       nixosConfigurations = {
+         # Replace 'yourhostname' with your actual hostname
+         yourhostname = nixpkgs.lib.nixosSystem {
+           system = "x86_64-linux";  # or "aarch64-linux" for ARM
+           modules = [
+             ./configuration.nix
+             home-manager.nixosModules.home-manager
+             {
+               home-manager.useGlobalPkgs = true;
+               home-manager.useUserPackages = true;
+               # Replace 'youruser' with your actual username
+               home-manager.users.youruser = import /home/youruser/.config/nix-setup/home;
+             }
+           ];
+         };
        };
      };
    }
    ```
 
-2. Import the home configuration in your system configuration:
+3. Ensure your `/etc/nixos/configuration.nix` includes flakes support:
    ```nix
    # /etc/nixos/configuration.nix
-   { config, pkgs, inputs, ... }:
+   { config, pkgs, ... }:
    {
-     imports = [
-       inputs.home-manager.nixosModules.home-manager
-     ];
+     # ... your existing configuration ...
+
+     nix.settings.experimental-features = [ "nix-command" "flakes" ];
      
-     home-manager.useGlobalPkgs = true;
-     home-manager.useUserPackages = true;
-     home-manager.users.youruser = import /home/youruser/.config/nix-setup/home;
+     # ... rest of your configuration ...
    }
    ```
 
-3. Rebuild your system:
+4. Rebuild your system:
    ```bash
    sudo nixos-rebuild switch --flake /etc/nixos#yourhostname
    ```
