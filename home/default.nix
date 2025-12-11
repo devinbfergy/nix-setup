@@ -1,4 +1,4 @@
-{ config, pkgs, username, nix-setup ? null, ... }:
+{ config, pkgs, lib, username, nix-setup ? null, ... }:
 
 {
   imports = [
@@ -10,8 +10,8 @@
 
   # Home Manager needs a bit of information about you and the paths it should manage
   home = {
-    username = username;
-    homeDirectory = if pkgs.stdenv.isDarwin then "/Users/${username}" else "/home/${username}";
+    username = lib.mkForce username;
+    homeDirectory = lib.mkForce (if pkgs.stdenv.isDarwin then "/Users/${username}" else "/home/${username}");
     stateVersion = "24.11";
 
     # Environment variables
