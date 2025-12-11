@@ -15,8 +15,9 @@
     };
     
     nix-setup = {
-      url = "path:/home/nixos/.config/nix-setup";
-      flake = false;
+      url = "github:devinbfergy/nix-setup";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.home-manager.follows = "home-manager";
     };
   };
 
@@ -32,6 +33,7 @@
           {
             home-manager.useGlobalPkgs = true;
             home-manager.useUserPackages = true;
+            # Import home configuration from the nix-setup flake input
             home-manager.users.nixos = import "${nix-setup}/home";
           }
         ];
