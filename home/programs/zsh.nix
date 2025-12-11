@@ -8,7 +8,7 @@
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
     
-    dotDir = ".config/zsh";
+    dotDir = "${config.xdg.configHome}/zsh";
     
     history = {
       size = 50000;
@@ -73,7 +73,7 @@
       code = "cd $CODE_DIR";
     };
     
-    initExtra = ''
+    initContent = ''
       # Source ZSH configuration files from the config directory
       DOTFILES_CONFIG="${config.home.homeDirectory}/.config/nix-setup/config"
       

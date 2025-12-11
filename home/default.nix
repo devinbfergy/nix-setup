@@ -28,6 +28,7 @@
     packages = with pkgs; [
       # Core utilities
       bash
+      zsh
       coreutils
       findutils
       gnugrep
@@ -44,7 +45,7 @@
       
       # Development tools
       gh            # GitHub CLI
-      git-delta     # Better git diff
+      delta         # Better git diff
       lazygit       # Git TUI
       
       # File tools
@@ -194,11 +195,6 @@
       };
     };
   };
-  
-  # Symlink mise config as well (for any manual edits)
-  home.file.".config/mise/config.toml".source = 
-    config.lib.file.mkOutOfStoreSymlink 
-      "${config.home.homeDirectory}/.config/nix-setup/config/mise/config.toml";
 
   # OpenCode configuration
   home.file.".config/opencode/opencode.json".source = 

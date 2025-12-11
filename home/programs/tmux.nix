@@ -139,9 +139,4 @@
       }
     ];
   };
-  
-  # Link tmux config from dotfiles
-  home.file.".config/tmux/tmux.conf".source = 
-    config.lib.file.mkOutOfStoreSymlink 
-      "${config.home.homeDirectory}/.config/nix-setup/config/tmux/tmux.conf";
 }
