@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ config, pkgs, nix-setup ? null, ... }:
 
 {
   programs.neovim = {
@@ -46,8 +46,11 @@
   # Symlink neovim config from dotfiles
   # This allows lazy.nvim and the existing config to work as-is
   home.file.".config/nvim" = {
-    source = config.lib.file.mkOutOfStoreSymlink 
-      "${config.home.homeDirectory}/.config/nix-setup/config/nvim";
+    source = if nix-setup != null then
+      "${nix-setup}/config/nvim"
+    else
+      config.lib.file.mkOutOfStoreSymlink 
+        "${config.home.homeDirectory}/.config/nix-setup/config/nvim";
     recursive = true;
   };
   

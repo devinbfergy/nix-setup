@@ -1,4 +1,4 @@
-{ config, pkgs, username, ... }:
+{ config, pkgs, username, nix-setup ? null, ... }:
 
 {
   imports = [
@@ -198,6 +198,9 @@
 
   # OpenCode configuration
   home.file.".config/opencode/opencode.json".source = 
-    config.lib.file.mkOutOfStoreSymlink 
-      "${config.home.homeDirectory}/.config/nix-setup/config/opencode/opencode.json";
+    if nix-setup != null then
+      "${nix-setup}/config/opencode/opencode.json"
+    else
+      config.lib.file.mkOutOfStoreSymlink 
+        "${config.home.homeDirectory}/.config/nix-setup/config/opencode/opencode.json";
 }

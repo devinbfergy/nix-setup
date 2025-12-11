@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ config, pkgs, nix-setup ? null, ... }:
 
 {
   programs.zsh = {
@@ -214,7 +214,12 @@
   };
   
   # ZSH-specific files to link
-  home.file = {
+  home.file = if nix-setup != null then {
+    ".config/zsh/.zshrc".source = "${nix-setup}/config/zsh/.zshrc";
+    ".config/zsh/.zsh_prompt".source = "${nix-setup}/config/zsh/.zsh_prompt";
+    ".config/zsh/.zsh_functions".source = "${nix-setup}/config/zsh/.zsh_functions";
+    ".config/zsh/.zsh_aliases".source = "${nix-setup}/config/zsh/.zsh_aliases";
+  } else {
     ".config/zsh/.zshrc".source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/.config/nix-setup/config/zsh/.zshrc";
     ".config/zsh/.zsh_prompt".source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/.config/nix-setup/config/zsh/.zsh_prompt";
     ".config/zsh/.zsh_functions".source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/.config/nix-setup/config/zsh/.zsh_functions";

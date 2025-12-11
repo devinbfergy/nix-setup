@@ -25,7 +25,7 @@
     nixosConfigurations = {
       nixos = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
-        specialArgs = { inherit inputs; };
+        specialArgs = { inherit inputs nix-setup; };
         modules = [
           nixos-wsl.nixosModules.wsl
           ./configuration.nix
@@ -33,7 +33,8 @@
           {
             home-manager.useGlobalPkgs = true;
             home-manager.useUserPackages = true;
-            # Import home configuration from the nix-setup flake input
+            home-manager.extraSpecialArgs = { inherit nix-setup; };
+            # Import home configuration and pass nix-setup path
             home-manager.users.nixos = import "${nix-setup}/home";
           }
         ];
