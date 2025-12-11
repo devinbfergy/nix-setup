@@ -69,9 +69,13 @@ A fully declarative and reproducible development environment using Nix flakes, n
   xcode-select --install
   ```
 
-### Linux
+### Linux (non-NixOS)
 - Any modern Linux distribution
 - Sudo access for installation
+
+### NixOS
+- NixOS 23.05 or later
+- See the [NixOS Installation](#on-nixos) section below for specific instructions
 
 ## Installation
 
@@ -151,6 +155,73 @@ Subsequent updates:
 home-manager switch --flake ~/.config/nix-setup#linux
 ```
 
+#### On NixOS:
+
+NixOS users have two options:
+
+**Option 1: System-wide integration (Recommended)**
+
+Integrate this configuration into your NixOS system configuration by importing the home-manager module:
+
+1. Add home-manager to your system flake inputs:
+   ```nix
+   # /etc/nixos/flake.nix
+   {
+     inputs = {
+       nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+       home-manager = {
+         url = "github:nix-community/home-manager";
+         inputs.nixpkgs.follows = "nixpkgs";
+       };
+       nix-setup = {
+         url = "github:devinbfergy/nix-setup";  # or use path:./path/to/nix-setup for local
+         inputs.nixpkgs.follows = "nixpkgs";
+       };
+     };
+   }
+   ```
+
+2. Import the home configuration in your system configuration:
+   ```nix
+   # /etc/nixos/configuration.nix
+   { config, pkgs, inputs, ... }:
+   {
+     imports = [
+       inputs.home-manager.nixosModules.home-manager
+     ];
+     
+     home-manager.useGlobalPkgs = true;
+     home-manager.useUserPackages = true;
+     home-manager.users.youruser = import /home/youruser/.config/nix-setup/home;
+   }
+   ```
+
+3. Rebuild your system:
+   ```bash
+   sudo nixos-rebuild switch --flake /etc/nixos#yourhostname
+   ```
+
+**Option 2: Standalone home-manager (User-level only)**
+
+Use the same approach as non-NixOS Linux distributions. This manages only your user environment without requiring system-level changes:
+
+```bash
+# Clone the repository
+git clone https://github.com/devinbfergy/nix-setup.git ~/.config/nix-setup
+cd ~/.config/nix-setup
+
+# First-time setup
+nix run home-manager/master -- switch --flake ~/.config/nix-setup#linux
+
+# Subsequent updates
+home-manager switch --flake ~/.config/nix-setup#linux
+```
+
+**Which option to choose?**
+
+- Use **Option 1** if you want full integration with NixOS system management and prefer declarative system-wide configuration
+- Use **Option 2** if you only want to manage your user environment or don't have root access to modify system configuration
+
 ### 5. Set ZSH as Default Shell
 
 ```bash
@@ -173,7 +244,13 @@ Restart your terminal or log out and back in for changes to take effect.
    # macOS
    darwin-rebuild switch --flake ~/.config/nix-setup#macbook
    
-   # Linux
+   # Linux (standalone home-manager)
+   home-manager switch --flake ~/.config/nix-setup#linux
+   
+   # NixOS (system-wide integration)
+   sudo nixos-rebuild switch --flake /etc/nixos#yourhostname
+   
+   # NixOS (standalone home-manager)
    home-manager switch --flake ~/.config/nix-setup#linux
    ```
 
@@ -198,7 +275,15 @@ If something breaks, you can easily rollback:
 # macOS
 darwin-rebuild switch --rollback
 
-# Linux
+# Linux (standalone home-manager)
+home-manager generations
+home-manager switch --switch-generation <number>
+
+# NixOS (system-wide integration)
+sudo nixos-rebuild switch --rollback
+# Or select previous generation from boot menu
+
+# NixOS (standalone home-manager)
 home-manager generations
 home-manager switch --switch-generation <number>
 ```
