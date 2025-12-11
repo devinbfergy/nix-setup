@@ -1,0 +1,31 @@
+[tools]
+# These tools are managed by Nix in our home-manager config
+# But mise can be used for project-specific versions if needed
+# uv = "latest"    # Installed via Nix
+# ruff = "latest"  # Installed via Nix
+
+[settings]
+# Enable experimental features
+experimental = true
+
+# Use Nix as the backend when available
+# This allows mise to leverage Nix packages for tools
+use_nix = true
+
+# Automatically create Python venvs with uv
+python.uv_venv_auto = true
+
+# Trust config files in Developer directory
+trusted_config_paths = [
+  "~/Developer/",
+  "~/.config/nix-setup/"
+]
+
+# Verbose output for debugging
+verbose = false
+
+# Always keep download cache
+always_keep_download = true
+
+# Enable task runner
+task_runner = true

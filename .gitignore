@@ -1,0 +1,27 @@
+# Nix build results
+result
+result-*
+
+# Nix flake
+.direnv/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local configuration
+.localrc
+
+# Temporary files
+*.tmp
+*.bak
+
+# Config-specific ignores (keep these as symlinks will be managed)

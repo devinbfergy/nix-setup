@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Source common utilities
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
+
+# Configuration
+OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-gpt-oss}"
+COMMIT_STYLE="${COMMIT_STYLE:-conventional}" # conventional or simple
+
+# Usage information
+usage() {
+  cat <<EOF
+$(fmt_title_border "git-aicommit")
+
+Generate AI-powered git commit messages using Ollama.
+
+$(fmt_key "Usage:")
+  git aicommit [options]
+
+$(fmt_key "Options:")
+  -h, --help              Show this help message
+  -m, --model MODEL       Specify Ollama model (default: ${OLLAMA_MODEL})
+  -s, --style STYLE       Commit style: conventional or simple (default: ${COMMIT_STYLE})
+  -n, --no-confirm        Skip confirmation prompt
+  -e, --edit              Open editor to edit the message before committing
+  --host HOST             Ollama host URL (default: ${OLLAMA_HOST})
+
+$(fmt_key "Environment Variables:")
+  OLLAMA_HOST             Ollama API host (default: http://localhost:11434)
+  OLLAMA_MODEL            Default model to use (default: gitdiff)
+  COMMIT_STYLE            Default commit style (default: conventional)
+
+$(fmt_key "Examples:")
+  git aicommit
+  git aicommit -m llama3.2 -s simple
+  git aicommit --no-confirm
+  git aicommit --edit
+
+EOF
+  exit 0
+}
+
+# Parse command line arguments
+NO_CONFIRM=0
+EDIT_MODE=0
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help)
+      usage
+      ;;
+    -m|--model)
+      OLLAMA_MODEL="$2"
+      shift 2
+      ;;
+    -s|--style)
+      COMMIT_STYLE="$2"
+      shift 2
+      ;;
+    -n|--no-confirm)
+      NO_CONFIRM=1
+      shift
+      ;;
+    -e|--edit)
+      EDIT_MODE=1
+      shift
+      ;;
+    --host)
+      OLLAMA_HOST="$2"
+      shift 2
+      ;;
+    *)
+      log_error "Unknown option: $1"
+      echo "Run 'git aicommit --help' for usage information."
+      exit 1
+      ;;
+  esac
+done
+
+# Check if we're in a git repository
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+  log_error "Not in a git repository"
+  exit 1
+fi
+
+# Check if there are staged changes
+log_info "Checking for staged changes..."
+diff=$(git diff --cached)
+
+if [ -z "$diff" ]; then
+  log_warning "No staged changes to commit."
+  echo ""
+  echo "Tip: Stage changes with $(fmt_cmd "git add <files>") first"
+  exit 1
+fi
+
+# Get summary of changes
+files_changed=$(git diff --cached --stat | tail -1)
+log_success "Found staged changes: ${files_changed}"
+echo ""
+
+# Check if Ollama is running
+log_info "Checking Ollama connection at ${OLLAMA_HOST}..."
+if ! curl -sf "${OLLAMA_HOST}/api/tags" > /dev/null; then
+  log_error "Cannot connect to Ollama at ${OLLAMA_HOST}"
+  echo ""
+  echo "Make sure Ollama is running:"
+  echo "  $(fmt_cmd "ollama serve")"
+  exit 1
+fi
+log_success "Connected to Ollama"
+echo ""
+
+# Build the prompt based on commit style
+if [ "$COMMIT_STYLE" = "conventional" ]; then
+  prompt="You are an expert at writing git commit messages following the Conventional Commits specification.
+
+Analyze the following git diff and generate a commit message that:
+1. Uses conventional commit format: <type>(<scope>): <description>
+2. Types: feat, fix, docs, style, refactor, test, chore, perf, ci, build, revert
+3. Has a short summary line (50-72 chars)
+4. Optionally includes a blank line followed by a detailed body
+5. Focuses on WHY the change was made, not just WHAT changed
+6. Uses imperative mood (\"add\" not \"added\", \"fix\" not \"fixed\")
+
+Generate ONLY the commit message, no explanations or meta-commentary.
+
+Git diff:
+${diff}"
+else
+  prompt="You are an expert at writing clear, concise git commit messages.
+
+Analyze the following git diff and generate a commit message that:
+1. Has a clear, short summary line (50-72 chars)
+2. Uses imperative mood (\"add\" not \"added\", \"fix\" not \"fixed\")
+3. Optionally includes a blank line followed by additional context
+4. Focuses on WHY the change was made, not just WHAT changed
+
+Generate ONLY the commit message, no explanations or meta-commentary.
+
+Git diff:
+${diff}"
+fi
+
+# Generate commit message using Ollama
+log_info "Generating commit message with model: ${OLLAMA_MODEL}..."
+echo ""
+
+# Create JSON request
+request_data=$(jq -n \
+  --arg model "$OLLAMA_MODEL" \
+  --arg prompt "$prompt" \
+  '{
+    model: $model,
+    prompt: $prompt,
+    stream: false,
+    options: {
+      temperature: 0.7,
+      top_p: 0.9
+    }
+  }')
+
+# Make request to Ollama
+response=$(curl -sf -X POST "${OLLAMA_HOST}/api/generate" \
+  -H "Content-Type: application/json" \
+  -d "$request_data" 2>&1)
+
+if [ $? -ne 0 ]; then
+  log_error "Failed to generate commit message"
+  echo ""
+  echo "Error: $response"
+  exit 1
+fi
+
+# Extract commit message
+commit_message=$(echo "$response" | jq -r '.response' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+if [ -z "$commit_message" ] || [ "$commit_message" = "null" ]; then
+  log_error "No commit message generated"
+  exit 1
+fi
+
+# Clean up the message (remove any markdown code blocks if present)
+commit_message=$(echo "$commit_message" | sed -e 's/^```.*$//' -e '/^```$/d' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+log_success "Generated commit message:"
+echo ""
+printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
+echo "$commit_message" | while IFS= read -r line; do
+  printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$line"
+done
+printf "%b└─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
+echo ""
+
+# Edit mode
+if [ $EDIT_MODE -eq 1 ]; then
+  temp_file=$(mktemp)
+  echo "$commit_message" > "$temp_file"
+  "${EDITOR:-vim}" "$temp_file"
+  commit_message=$(cat "$temp_file")
+  rm "$temp_file"
+  
+  log_info "Edited commit message:"
+  echo ""
+  printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
+  echo "$commit_message" | while IFS= read -r line; do
+    printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$line"
+  done
+  printf "%b└─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
+  echo ""
+fi
+
+# Confirm before committing
+if [ $NO_CONFIRM -eq 0 ]; then
+  echo -n "$(fmt_key "Commit with this message?") [y/N/e(dit)] "
+  read -r response
+  
+  case "$response" in
+    [yY][eE][sS]|[yY])
+      # Continue to commit
+      ;;
+    [eE]|[eE][dD][iI][tT])
+      # Edit the message
+      temp_file=$(mktemp)
+      echo "$commit_message" > "$temp_file"
+      "${EDITOR:-vim}" "$temp_file"
+      commit_message=$(cat "$temp_file")
+      rm "$temp_file"
+      
+      log_info "Updated commit message:"
+      echo ""
+      printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
+      echo "$commit_message" | while IFS= read -r line; do
+        printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$line"
+      done
+      printf "%b└─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
+      echo ""
+      ;;
+    *)
+      log_warning "Commit cancelled"
+      exit 0
+      ;;
+  esac
+fi
+
+# Commit the changes
+log_info "Creating commit..."
+if git commit -m "$commit_message"; then
+  log_success "Successfully committed changes!"
+else
+  log_error "Failed to commit changes"
+  exit 1
+fi

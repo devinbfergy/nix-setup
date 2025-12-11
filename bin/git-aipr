@@ -1,0 +1,483 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Source common utilities
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
+
+# Configuration
+OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-gpt-oss}"
+BASE_BRANCH="${BASE_BRANCH:-}"
+
+# Function to detect default branch
+get_default_branch() {
+  local default_branch
+  
+  # Try to get the default branch from remote HEAD
+  default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+  
+  if [ -n "$default_branch" ]; then
+    echo "$default_branch"
+    return
+  fi
+  
+  # If that fails, query the remote directly (works with worktrees)
+  default_branch=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | sed 's/.*: //')
+  
+  if [ -n "$default_branch" ]; then
+    echo "$default_branch"
+    return
+  fi
+  
+  # If that fails, check which one exists locally or remotely
+  if git rev-parse --verify origin/main >/dev/null 2>&1 || git rev-parse --verify main >/dev/null 2>&1; then
+    echo "main"
+  elif git rev-parse --verify origin/master >/dev/null 2>&1 || git rev-parse --verify master >/dev/null 2>&1; then
+    echo "master"
+  else
+    # Fallback to main
+    echo "main"
+  fi
+}
+
+# Usage information
+usage() {
+  local default_base="${BASE_BRANCH:-auto-detected}"
+  cat <<EOF
+$(fmt_title_border "git-aipr")
+
+Generate AI-powered PR title and description using Ollama and create PR with GitHub CLI.
+
+$(fmt_key "Usage:")
+  git aipr [options]
+
+$(fmt_key "Options:")
+  -h, --help              Show this help message
+  -m, --model MODEL       Specify Ollama model (default: ${OLLAMA_MODEL})
+  -b, --base BRANCH       Base branch for PR (default: ${default_base})
+  -n, --no-confirm        Skip confirmation prompt
+  -e, --edit              Open editor to edit the PR details before creating
+  --host HOST             Ollama host URL (default: ${OLLAMA_HOST})
+  --draft                 Create PR as draft
+
+$(fmt_key "Environment Variables:")
+  OLLAMA_HOST             Ollama API host (default: http://localhost:11434)
+  OLLAMA_MODEL            Default model to use (default: gpt-oss)
+  BASE_BRANCH             Default base branch (default: auto-detected main/master)
+
+$(fmt_key "Examples:")
+  git aipr
+  git aipr -m llama3.2 -b develop
+  git aipr --no-confirm --draft
+  git aipr --edit
+
+$(fmt_key "Requirements:")
+  - GitHub CLI (gh) must be installed and authenticated
+  - Ollama must be running
+  - Must be on a git branch (not main/master)
+
+EOF
+  exit 0
+}
+
+# Parse command line arguments
+NO_CONFIRM=0
+EDIT_MODE=0
+DRAFT_FLAG=""
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help)
+      usage
+      ;;
+    -m|--model)
+      OLLAMA_MODEL="$2"
+      shift 2
+      ;;
+    -b|--base)
+      BASE_BRANCH="$2"
+      shift 2
+      ;;
+    -n|--no-confirm)
+      NO_CONFIRM=1
+      shift
+      ;;
+    -e|--edit)
+      EDIT_MODE=1
+      shift
+      ;;
+    --host)
+      OLLAMA_HOST="$2"
+      shift 2
+      ;;
+    --draft)
+      DRAFT_FLAG="--draft"
+      shift
+      ;;
+    *)
+      log_error "Unknown option: $1"
+      echo "Run 'git aipr --help' for usage information."
+      exit 1
+      ;;
+  esac
+done
+
+# Check if we're in a git repository
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+  log_error "Not in a git repository"
+  exit 1
+fi
+
+# Check if gh is installed
+if ! command -v gh &> /dev/null; then
+  log_error "GitHub CLI (gh) is not installed"
+  echo ""
+  echo "Install it with:"
+  echo "  $(fmt_cmd "brew install gh")"
+  exit 1
+fi
+
+# Check if gh is authenticated
+if ! gh auth status &> /dev/null; then
+  log_error "GitHub CLI is not authenticated"
+  echo ""
+  echo "Authenticate with:"
+  echo "  $(fmt_cmd "gh auth login")"
+  exit 1
+fi
+
+# Get current branch
+current_branch=$(git branch --show-current)
+
+if [ -z "$current_branch" ]; then
+  log_error "Not on a branch (detached HEAD state)"
+  exit 1
+fi
+
+# Don't allow creating PR from main/master
+if [[ "$current_branch" == "main" ]] || [[ "$current_branch" == "master" ]]; then
+  log_error "Cannot create PR from main/master branch"
+  echo ""
+  echo "Switch to a feature branch first:"
+  echo "  $(fmt_cmd "git checkout -b feature/my-feature")"
+  exit 1
+fi
+
+log_success "Current branch: ${current_branch}"
+
+# Auto-detect base branch if not set
+if [ -z "$BASE_BRANCH" ]; then
+  BASE_BRANCH=$(get_default_branch)
+  log_info "Auto-detected base branch: ${BASE_BRANCH}"
+fi
+
+# Determine the full ref for base branch (origin/branch or just branch)
+BASE_REF=""
+if git rev-parse --verify "origin/${BASE_BRANCH}" &> /dev/null; then
+  BASE_REF="origin/${BASE_BRANCH}"
+elif git rev-parse --verify "${BASE_BRANCH}" &> /dev/null; then
+  BASE_REF="${BASE_BRANCH}"
+else
+  log_error "Base branch '${BASE_BRANCH}' not found (tried origin/${BASE_BRANCH} and ${BASE_BRANCH})"
+  exit 1
+fi
+
+# Check if branch has commits ahead of base
+log_info "Checking branch status..."
+commits_ahead=$(git rev-list --count "${BASE_REF}..HEAD")
+if [ "$commits_ahead" -eq 0 ]; then
+  log_warning "No commits ahead of ${BASE_BRANCH}"
+  exit 1
+fi
+
+log_success "Found ${commits_ahead} commit(s) ahead of ${BASE_BRANCH}"
+echo ""
+
+# Get diff between base and current branch
+log_info "Getting diff from ${BASE_BRANCH}..."
+diff=$(git diff "${BASE_REF}...HEAD")
+
+if [ -z "$diff" ]; then
+  log_warning "No changes found between ${BASE_BRANCH} and ${current_branch}"
+  exit 1
+fi
+
+# Get commit history
+commit_log=$(git log "${BASE_REF}..HEAD" --pretty=format:"%s" --reverse)
+log_success "Analyzed changes"
+echo ""
+
+# Check if Ollama is running
+log_info "Checking Ollama connection at ${OLLAMA_HOST}..."
+if ! curl -sf "${OLLAMA_HOST}/api/tags" > /dev/null; then
+  log_error "Cannot connect to Ollama at ${OLLAMA_HOST}"
+  echo ""
+  echo "Make sure Ollama is running:"
+  echo "  $(fmt_cmd "ollama serve")"
+  exit 1
+fi
+log_success "Connected to Ollama"
+echo ""
+
+# Build the prompt for PR generation
+# Extract potential JIRA ticket from branch name
+jira_ticket=""
+if [[ "$current_branch" =~ ([A-Z]+-[0-9]+) ]]; then
+  jira_ticket="${BASH_REMATCH[1]}"
+fi
+
+prompt="You are an expert at writing pull request titles and descriptions.
+
+Analyze the following git diff and commit history to generate a pull request:
+
+Current branch: ${current_branch}
+$([ -n "$jira_ticket" ] && echo "Detected ticket: ${jira_ticket}")
+
+Commit history:
+${commit_log}
+
+Git diff:
+${diff}
+
+Generate a PR title and description following these guidelines:
+
+PR TITLE:
+- Use conventional commit format with type prefix
+- Types: feat, fix, docs, style, refactor, test, chore, perf, ci, build
+- If a JIRA ticket is detected in the branch name, include it: type(TICKET-123): description
+- If no ticket, use: type: description or type(scope): description
+- Examples:
+  * feat(CLOUDSEC-1602): Add vulnerability scanning to CI pipeline
+  * fix: Resolve memory leak in query executor
+  * refactor(api): Simplify error handling logic
+- Concise, descriptive summary (50-72 chars total)
+- Use imperative mood (\"Add\" not \"Added\", \"Fix\" not \"Fixed\")
+- Clearly state what the PR accomplishes
+
+PR DESCRIPTION:
+- Start with a brief summary of what and why (2-3 sentences)
+- Include a \"Changes\" section with bullet points of key changes
+- If applicable, include a \"Testing\" section describing how to test
+- If there's a JIRA ticket, you can reference it
+- Keep it clear and concise
+
+Output ONLY in this exact format:
+TITLE: <title here>
+
+DESCRIPTION:
+<description here>
+
+Do not include any other text, explanations, or markdown code blocks."
+
+# Generate PR content using Ollama
+log_info "Generating PR title and description with model: ${OLLAMA_MODEL}..."
+echo ""
+
+# Create JSON request
+request_data=$(jq -n \
+  --arg model "$OLLAMA_MODEL" \
+  --arg prompt "$prompt" \
+  '{
+    model: $model,
+    prompt: $prompt,
+    stream: false,
+    options: {
+      temperature: 0.7,
+      top_p: 0.9
+    }
+  }')
+
+# Make request to Ollama
+response=$(curl -sf -X POST "${OLLAMA_HOST}/api/generate" \
+  -H "Content-Type: application/json" \
+  -d "$request_data" 2>&1)
+
+curl_exit=$?
+if [ $curl_exit -ne 0 ]; then
+  log_error "Failed to generate PR content (curl exit code: ${curl_exit})"
+  echo ""
+  echo "Error: $response"
+  exit 1
+fi
+
+# Extract response
+ai_response=$(echo "$response" | jq -r '.response' 2>&1)
+jq_exit=$?
+
+if [ $jq_exit -ne 0 ]; then
+  log_error "Failed to parse Ollama response"
+  echo ""
+  echo "Raw response:"
+  echo "$response"
+  exit 1
+fi
+
+# Trim whitespace
+ai_response=$(echo "$ai_response" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+if [ -z "$ai_response" ] || [ "$ai_response" = "null" ]; then
+  log_error "No PR content generated"
+  echo ""
+  echo "Raw response:"
+  echo "$response"
+  exit 1
+fi
+
+# Clean up response (remove any markdown code blocks if present)
+ai_response=$(echo "$ai_response" | sed -e 's/^```.*$//' -e '/^```$/d' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+# Parse title and description
+pr_title=$(echo "$ai_response" | grep -m 1 "^TITLE:" | sed 's/^TITLE:[[:space:]]*//')
+pr_description=$(echo "$ai_response" | sed -n '/^DESCRIPTION:/,$p' | sed '1d' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+if [ -z "$pr_title" ]; then
+  log_error "Failed to parse PR title from response"
+  echo ""
+  echo "AI Response:"
+  echo "$ai_response"
+  exit 1
+fi
+
+if [ -z "$pr_description" ]; then
+  pr_description="Changes from ${current_branch}"
+fi
+
+log_success "Generated PR content:"
+echo ""
+printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
+printf "%b│%b ${CYAN}${BOLD}Title:${RESET}\n" "${BRIGHT_BLACK}" "${RESET}"
+printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$pr_title"
+printf "%b│%b\n" "${BRIGHT_BLACK}" "${RESET}"
+printf "%b│%b ${CYAN}${BOLD}Description:${RESET}\n" "${BRIGHT_BLACK}" "${RESET}"
+echo "$pr_description" | while IFS= read -r line; do
+  printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$line"
+done
+printf "%b└─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
+echo ""
+
+# Edit mode
+if [ $EDIT_MODE -eq 1 ]; then
+  temp_file=$(mktemp)
+  echo "TITLE: $pr_title" > "$temp_file"
+  echo "" >> "$temp_file"
+  echo "DESCRIPTION:" >> "$temp_file"
+  echo "$pr_description" >> "$temp_file"
+  
+  "${EDITOR:-vim}" "$temp_file"
+  
+  # Re-parse after editing
+  pr_title=$(grep -m 1 "^TITLE:" "$temp_file" | sed 's/^TITLE:[[:space:]]*//')
+  pr_description=$(sed -n '/^DESCRIPTION:/,$p' "$temp_file" | sed '1d' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  rm "$temp_file"
+  
+  log_info "Edited PR content:"
+  echo ""
+  printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
+  printf "%b│%b ${CYAN}${BOLD}Title:${RESET}\n" "${BRIGHT_BLACK}" "${RESET}"
+  printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$pr_title"
+  printf "%b│%b\n" "${BRIGHT_BLACK}" "${RESET}"
+  printf "%b│%b ${CYAN}${BOLD}Description:${RESET}\n" "${BRIGHT_BLACK}" "${RESET}"
+  echo "$pr_description" | while IFS= read -r line; do
+    printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$line"
+  done
+  printf "%b└─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
+  echo ""
+fi
+
+# Confirm before creating PR
+if [ $NO_CONFIRM -eq 0 ]; then
+  echo -n "$(fmt_key "Create PR with this content?") [y/N/e(dit)] "
+  read -r response
+  
+  case "$response" in
+    [yY][eE][sS]|[yY])
+      # Continue to create PR
+      ;;
+    [eE]|[eE][dD][iI][tT])
+      # Edit the content
+      temp_file=$(mktemp)
+      echo "TITLE: $pr_title" > "$temp_file"
+      echo "" >> "$temp_file"
+      echo "DESCRIPTION:" >> "$temp_file"
+      echo "$pr_description" >> "$temp_file"
+      
+      "${EDITOR:-vim}" "$temp_file"
+      
+      # Re-parse after editing
+      pr_title=$(grep -m 1 "^TITLE:" "$temp_file" | sed 's/^TITLE:[[:space:]]*//')
+      pr_description=$(sed -n '/^DESCRIPTION:/,$p' "$temp_file" | sed '1d' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+      rm "$temp_file"
+      
+      log_info "Updated PR content:"
+      echo ""
+      printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
+      printf "%b│%b ${CYAN}${BOLD}Title:${RESET}\n" "${BRIGHT_BLACK}" "${RESET}"
+      printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$pr_title"
+      printf "%b│%b\n" "${BRIGHT_BLACK}" "${RESET}"
+      printf "%b│%b ${CYAN}${BOLD}Description:${RESET}\n" "${BRIGHT_BLACK}" "${RESET}"
+      echo "$pr_description" | while IFS= read -r line; do
+        printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$line"
+      done
+      printf "%b└─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
+      echo ""
+      ;;
+    *)
+      log_warning "PR creation cancelled"
+      exit 0
+      ;;
+  esac
+fi
+
+# Push current branch to remote if needed
+log_info "Checking remote branch status..."
+if ! git ls-remote --exit-code --heads origin "$current_branch" &> /dev/null; then
+  log_info "Pushing branch to remote..."
+  if ! git push -u origin "$current_branch"; then
+    log_error "Failed to push branch to remote"
+    exit 1
+  fi
+  log_success "Branch pushed to remote"
+else
+  log_info "Ensuring branch is up to date..."
+  if ! git push origin "$current_branch"; then
+    log_error "Failed to push branch to remote"
+    exit 1
+  fi
+  log_success "Branch is up to date"
+fi
+echo ""
+
+# Create PR using gh
+log_info "Creating pull request..."
+pr_url=$(gh pr create \
+  --base "$BASE_BRANCH" \
+  --head "$current_branch" \
+  --title "$pr_title" \
+  --body "$pr_description" \
+  $DRAFT_FLAG 2>&1)
+
+if [ $? -eq 0 ]; then
+  log_success "Successfully created pull request!"
+  echo ""
+  echo "$pr_url"
+  echo ""
+  
+  # Extract PR number from URL
+  pr_number=$(echo "$pr_url" | grep -oE '[0-9]+$')
+  
+  # Show the PR details
+  if [ -n "$pr_number" ]; then
+    log_info "Pull request details:"
+    echo ""
+    gh pr view --web "$pr_number" &> /dev/null &
+    gh pr view "$pr_number"
+  fi
+else
+  log_error "Failed to create pull request"
+  echo ""
+  echo "Error: $pr_url"
+  exit 1
+fi
