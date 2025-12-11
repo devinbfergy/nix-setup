@@ -13,9 +13,14 @@
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    
+    nix-setup = {
+      url = "path:/home/nixos/.config/nix-setup";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, nixos-wsl, home-manager, ... }@inputs: {
+  outputs = { self, nixpkgs, nixos-wsl, home-manager, nix-setup, ... }@inputs: {
     nixosConfigurations = {
       nixos = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
@@ -27,7 +32,7 @@
           {
             home-manager.useGlobalPkgs = true;
             home-manager.useUserPackages = true;
-            home-manager.users.devin = import /home/devin/.config/nix-setup/home;
+            home-manager.users.nixos = import "${nix-setup}/home";
           }
         ];
       };
